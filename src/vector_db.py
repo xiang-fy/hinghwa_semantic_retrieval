@@ -10,7 +10,7 @@ from tqdm import tqdm  # 进度条，方便查看向量生成进度
 # 解决导入路径问题：将项目根目录加入Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 导入本地模块（现在可以正确识别）
+# 导入本地模块
 from src.data_loader import load_excel_data
 from src.encoder import encode_entry_with_weights, encode_query, VECTOR_DIM
 
@@ -50,7 +50,7 @@ def build_faiss_index() -> Tuple[faiss.IndexFlatIP, List[str]]:
     index = faiss.IndexFlatIP(VECTOR_DIM)
     index.add(vectors_np)
 
-    # 5. 保存索引和ID映射到本地（避免重复生成）
+    # 5. 保存索引和ID映射到本地
     os.makedirs("models", exist_ok=True)
     faiss.write_index(index, INDEX_PATH)
     with open(ID_MAP_PATH, 'wb') as f:

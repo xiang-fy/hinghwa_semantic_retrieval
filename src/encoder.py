@@ -49,7 +49,7 @@ def encode_single_field(text: str) -> np.ndarray:
 
 def encode_entry_with_weights(entry: Dict[str, str]) -> np.ndarray:
     """
-    对单条方言词条做字段级加权融合（方案一核心逻辑）
+    对单条方言词条做字段级加权融合
     :param entry: 单条词条字典（包含方言词、简易发音、标准发音、释义注释）
     :return: 加权融合后的最终向量
     """
@@ -71,7 +71,7 @@ def encode_entry_with_weights(entry: Dict[str, str]) -> np.ndarray:
 
 def encode_query(query_text: str) -> np.ndarray:
     """
-    对用户查询生成嵌入向量（和字段嵌入用同一个模型，保证空间一致）
+    对用户查询生成嵌入向量
     :param query_text: 用户输入的查询（如"阿公是什么意思"）
     :return: 归一化后的查询向量
     """

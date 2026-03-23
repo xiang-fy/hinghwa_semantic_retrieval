@@ -19,7 +19,7 @@ def load_excel_data(excel_path: str = "data/dialect_dict.xlsx"):
     df = pd.read_excel(
         excel_path,
         engine='openpyxl',
-        usecols=['方言词', '简易发音', '标准发音', '释义注释']  # 只读取这4列
+        usecols=['方言词', '简易发音', '标准发音', '释义注释']  
     )
     
     # 基础清洗：去除空行、去除首尾空格
