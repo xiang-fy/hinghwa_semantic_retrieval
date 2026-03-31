@@ -2,9 +2,12 @@
 #方案一：直接调用API云端模型接口，获取重写后的查询文本
 # 注意：需先按方案A或B，替换src/query_rewriter.py
 import requests
+import os
+from dotenv import load_dotenv
 
 # ====================== 配置：替换为你的API密钥 ======================
-DEEPSEEK_API_KEY = "sk-587f18bd283241209879b5df0955a149"  # 使用LLMAPI进行查询解析
+load_dotenv()
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # 使用LLMAPI进行查询解析
 # ==========================================================================
 
 def parse_query(user_query: str) -> dict:
