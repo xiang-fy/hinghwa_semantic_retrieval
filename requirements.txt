@@ -15,3 +15,6 @@ requests>=2.31.0
 
 # 安全配置 (隐藏API Key，.env文件)
 python-dotenv>=1.0.0
+
+# 可选：GPU版Faiss（有GPU时添加，比faiss-cpu快10-100倍）
+# faiss-gpu>=1.8.0
