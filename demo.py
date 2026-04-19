@@ -1,14 +1,14 @@
 from src.query_rewriter import parse_query
 from src.vector_db import core_search
 from src.result_formatter import format_result
-# ========== 新增：IPA匹配相关导入 ==========
-from src.matcher.precise_ipa_matcher import PreciseIPAMatcher
+# ========== 新架构导入 ==========
+from src.matcher import MatcherManager
 from src.utils.common_utils import clean_ipa_str
 from src.data_loader import FIELD_MAPPING
 from typing import List, Dict, Optional, Set
 import re
 
-# 屏蔽 sentence-transformers / transformers 非项目代码本身的冗余日志
+# ========== 日志屏蔽 ==========
 import warnings
 warnings.filterwarnings("ignore")
 import logging
@@ -29,62 +29,54 @@ CACHE_DIR = "cache"
 IPA_CHAR_CACHE = os.path.join(CACHE_DIR, "ipa_chars.json")
 DATASET_SIGNATURE = os.path.join(CACHE_DIR, "dataset_signature.txt")
 
-# ========== 新增：模块化意图提取器（未来扩展用） ==========
+# ========== 全局统一匹配管理器（新架构核心）==========
+matcher_manager = MatcherManager()
+
+# ========== 模块化意图提取器（未来扩展用） ==========
 class IntentExtractor:
     """
-    模块化意图提取器：未来模糊/拼音匹配用，预留接口
-    用于从混合输入中提取核心IPA/拼音内容
+    模块化意图提取器：模糊/拼音/IPA 通用
+    用于从混合输入中提取核心内容
     """
     @staticmethod
     def extract_ipa(user_input: str) -> Optional[str]:
-        """从混合输入中提取核心IPA内容（未来实现）"""
         return None
 
     @staticmethod
     def extract_pinyin(user_input: str) -> Optional[str]:
-        """从混合输入中提取核心拼音内容（未来实现）"""
         return None
 
-# ========== 【动态 IPA 识别器：自适应数据集】==========
+# ========== 动态 IPA 识别器（保留，非常好用）==========
 class DynamicIPARecognizer:
     def __init__(self, valid_ipa_chars: set):
-        self.valid_ipa_chars = valid_ipa_chars  # 从数据集自动提取
-        # 基础允许字符（字母、数字、空格）
+        self.valid_ipa_chars = valid_ipa_chars
         self.basic_chars = set("abcdefghijklmnopqrstuvwxyz0123456789 ")
 
     def is_ipa_input(self, user_input: str) -> bool:
-        """
-        【真正工程化】
-        自动判断是否为 IPA：无中文 + 全部字符都在数据集真实出现过的字符里
-        换任何数据集都不用改代码！
-        """
         s = user_input.strip()
         if not s:
             return False
 
-        # 1. 包含中文 → 绝对不是 IPA
+        # 包含中文 → 不是 IPA
         if re.search(r"[\u4e00-\u9fa5]", s):
             return False
 
-        # 2. 所有字符必须是：基础字符 或 数据集中真实存在的IPA符号
+        # 字符必须合法
         for c in s:
             if c not in self.basic_chars and c not in self.valid_ipa_chars:
                 return False
 
-        # 3. 必须至少包含一个非字母数字的 IPA 符号
-        return any(c in self.valid_ipa_chars for c in s)
+        # 必须带数字（简易发音 / IPA 都有）
+        return any(c.isdigit() for c in s)
 
-# ========== 【缓存工具类：自动加载 / 保存 / 更新】==========
+# ========== 缓存工具类（保留，优化性能）==========
 class IPACharCache:
-    def __init__(self, ipa_dict_keys, dialect_df):
-        self.ipa_dict_keys = ipa_dict_keys
-        self.dialect_df = dialect_df
+    def __init__(self, all_ipa_list):
+        self.all_ipa_list = all_ipa_list
 
     def _get_dataset_signature(self) -> str:
-        """生成数据集唯一指纹，换数据集自动识别"""
         try:
-            ipa_series = self.dialect_df["标准发音"].dropna().astype(str)
-            content = "|".join(ipa_series.tolist())
+            content = "|".join(self.all_ipa_list)
             return hashlib.md5(content.encode("utf-8")).hexdigest()
         except:
             return "unknown"
@@ -94,13 +86,11 @@ class IPACharCache:
         if not os.path.exists(IPA_CHAR_CACHE) or not os.path.exists(DATASET_SIGNATURE):
             return None
 
-        # 检查数据集是否变化
         with open(DATASET_SIGNATURE, "r", encoding="utf-8") as f:
             cached_sig = f.read().strip()
         if cached_sig != self._get_dataset_signature():
             return None
 
-        # 加载缓存
         with open(IPA_CHAR_CACHE, "r", encoding="utf-8") as f:
             return set(json.load(f))
 
@@ -114,47 +104,38 @@ class IPACharCache:
     def get_chars(self) -> Set[str]:
         cached = self.load()
         if cached is not None:
-            # print(f"[缓存] 加载 IPA 字符集，共 {len(cached)} 个符号")
             return cached
 
-        # print("[缓存] 首次运行/数据集更新，重新提取 IPA 字符...")
         chars = set()
-        for ipa in self.ipa_dict_keys:
+        for ipa in self.all_ipa_list:
             for c in ipa:
                 chars.add(c)
         self.save(chars)
-        # print(f"[缓存] 提取完成，已保存 {len(chars)} 个符号")
         return chars
 
-# ========== 可扩展查询管理器 ==========
+# ========== 可扩展融合查询管理器（已完全重构）==========
 class ExtensibleFusionQueryManager:
     def __init__(self):
         self.original_enabled = True
-        self.ipa_enabled = False
+        self.ipa_enabled = ENABLE_IPA_MATCH
         self.ipa_recognizer = None
 
-        if ENABLE_IPA_MATCH:
+        if self.ipa_enabled:
             try:
-                # 加载 IPA 匹配器
-                self.ipa_matcher = PreciseIPAMatcher()
+                # ==============================================
+                # 【关键】使用新架构的 MatcherManager
+                # ==============================================
+                self.ipa_matcher = matcher_manager
 
-                # ==============================================
-                # 核心：带缓存的动态 IPA 字符集
-                # ==============================================
-                cache = IPACharCache(
-                    ipa_dict_keys=self.ipa_matcher.ipa_to_row.keys(),
-                    dialect_df=self.ipa_matcher.dialect_df
-                )
+                # 从新 IPA 匹配器获取所有 IPA 列表
+                all_ipa = matcher_manager.ipa_matcher.all_ipa_list
+                cache = IPACharCache(all_ipa)
                 self.valid_ipa_chars = cache.get_chars()
-
                 self.ipa_recognizer = DynamicIPARecognizer(self.valid_ipa_chars)
-                self.ipa_enabled = True
+
             except Exception as e:
                 print(f"IPA 模块加载失败：{e}")
-
-    def _extract_all_ipa_chars(self) -> set:
-        """保留你原有接口，实际已走缓存"""
-        return self.valid_ipa_chars
+                self.ipa_enabled = False
 
     def query(self, user_input: str) -> str:
         if self.ipa_enabled and self.ipa_recognizer.is_ipa_input(user_input):
@@ -163,10 +144,11 @@ class ExtensibleFusionQueryManager:
             return self._original_query_path(user_input)
 
     def _ipa_query_path(self, user_input: str) -> str:
-        """IPA查询路径：当前精准匹配，未来可扩展模糊匹配"""
-        # 未来灵活模式下，可先调用IntentExtractor.extract_ipa提取核心IPA
-        # clean = clean_ipa_str(user_input)
-        res = self.ipa_matcher.precise_ipa_match(user_input)
+        """
+        新版 IPA 查询：
+        自动支持 → 简易发音精准 + 标准IPA精准 + 模糊匹配
+        """
+        res = self.ipa_matcher.ipa_query(user_input, top_k=5)
         if res:
             return format_result(self._adapt(res))
         return "未匹配到对应 IPA 词条"
@@ -177,7 +159,7 @@ class ExtensibleFusionQueryManager:
         return format_result(result)
 
     def _pinyin_query_path(self, user_input: str) -> str:
-        """拼音查询路径：预留实现，未来可扩展"""
+        """预留拼音接口，未来直接实现"""
         return "拼音匹配功能尚未开放"
 
     def _adapt(self, res):
@@ -194,18 +176,16 @@ class ExtensibleFusionQueryManager:
 
 # ========== main ==========
 def main():
-    # 初始化可扩展融合查询管理器
     manager = ExtensibleFusionQueryManager()
-    
-    # 原有标题保留，仅新增IPA查询说明（仅当开启时显示）
+
     print("="*60)
     print("        莆仙方言精准检索系统")
     print("="*60)
     print("支持查询：")
-    print("1. 方言查方言（如：漉、𢫫裤）")
-    print("2. 普通话/释义查方言（如：爸爸、踩水）")
+    print("1. 方言词查询")
+    print("2. 普通话 / 释义查询")
     if ENABLE_IPA_MATCH and manager.ipa_enabled:
-        print("3. 标准IPA查方言（如：lɒʔ1）")
+        print("3. IPA / 简易发音查询（支持精准 + 模糊）")
     print("输入 q/quit 退出\n")
 
     while True:
@@ -216,13 +196,12 @@ def main():
         if not user_input:
             print("查询不能为空，请重新输入！\n")
             continue
-        
+
         try:
             formatted_result = manager.query(user_input)
             print("\n" + formatted_result + "\n")
         except Exception as e:
             print(f"出错：{e}\n")
-            continue
 
 if __name__ == "__main__":
     main()
