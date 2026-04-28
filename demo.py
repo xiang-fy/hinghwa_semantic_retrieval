@@ -46,11 +46,16 @@ class IntentExtractor:
     def extract_pinyin(user_input: str) -> Optional[str]:
         return None
 
-# ========== 动态 IPA 识别器（保留，非常好用）==========
+# ========== 动态 IPA 识别器==========
 class DynamicIPARecognizer:
-    def __init__(self, valid_ipa_chars: set):
+    def __init__(self, valid_ipa_chars: set, known_ipa_forms: Optional[Set[str]] = None):
         self.valid_ipa_chars = valid_ipa_chars
+        self.known_ipa_forms = known_ipa_forms or set()
         self.basic_chars = set("abcdefghijklmnopqrstuvwxyz0123456789 ")
+        self.ipa_special_chars = set("ɒɔøœŋɬʔβɛɯɾʃʂʈɖʐʑŋɱɳ")
+
+    def _strip_phonetic_marks(self, text: str) -> str:
+        return re.sub(r"[\d\s'’`]+", "", text.strip().lower())
 
     def is_ipa_input(self, user_input: str) -> bool:
         s = user_input.strip()
@@ -66,8 +71,81 @@ class DynamicIPARecognizer:
             if c not in self.basic_chars and c not in self.valid_ipa_chars:
                 return False
 
-        # 必须带数字（简易发音 / IPA 都有）
-        return any(c.isdigit() for c in s)
+        normalized = self._strip_phonetic_marks(s)
+
+        # 已知 IPA 词形优先命中，避免与拼音路由冲突
+        if normalized in self.known_ipa_forms:
+            return True
+
+        # 含声调数字或明确 IPA 特征符号时，直接走 IPA
+        if any(c.isdigit() for c in s):
+            return True
+
+        if any(c in self.ipa_special_chars for c in s):
+            return True
+
+        return False
+
+
+class DynamicPinyinRecognizer:
+    def __init__(self):
+        self.initials = (
+            "zh", "ch", "sh",
+            "b", "p", "m", "f", "d", "t", "n", "l",
+            "g", "k", "h", "j", "q", "x",
+            "r", "z", "c", "s", "y", "w",
+        )
+        self.finals = (
+            "iang", "iong", "uang", "ueng",
+            "iao", "ian", "ing", "uai", "uan", "uen",
+            "ong", "ang", "eng", "ai", "ei", "ao", "ou", "an", "en", "ia", "ie", "iu", "ua", "uo", "ui", "un", "ve", "üe",
+            "a", "o", "e", "i", "u", "v", "ü", "er", "ê",
+        )
+        self._finals_sorted = sorted(set(self.finals), key=len, reverse=True)
+        self._initials_sorted = sorted(set(self.initials), key=len, reverse=True)
+
+    def _normalize(self, text: str) -> str:
+        return re.sub(r"[\d\s'’`]+", "", text.strip().lower())
+
+    def _is_valid_syllable(self, syllable: str) -> bool:
+        if not syllable:
+            return False
+        for initial in self._initials_sorted:
+            if syllable.startswith(initial):
+                tail = syllable[len(initial):]
+                return tail in self._finals_sorted
+        return syllable in self._finals_sorted
+
+    def is_pinyin_input(self, user_input: str) -> bool:
+        s = self._normalize(user_input)
+        if not s:
+            return False
+
+        if re.search(r"[\u4e00-\u9fa5]", s):
+            return False
+        if re.search(r"[ɒɔøœŋɬʔβɛɯɾʃʂʈɖʐʑ]", s):
+            return False
+        if not re.fullmatch(r"[a-züv]+", s):
+            return False
+
+        memo = {}
+
+        def can_parse(start: int) -> bool:
+            if start == len(s):
+                return True
+            if start in memo:
+                return memo[start]
+
+            for end in range(min(len(s), start + 6), start, -1):
+                chunk = s[start:end]
+                if self._is_valid_syllable(chunk) and can_parse(end):
+                    memo[start] = True
+                    return True
+
+            memo[start] = False
+            return False
+
+        return can_parse(0)
 
 # ========== 缓存工具类（保留，优化性能）==========
 class IPACharCache:
@@ -113,12 +191,14 @@ class IPACharCache:
         self.save(chars)
         return chars
 
-# ========== 可扩展融合查询管理器（已完全重构）==========
+# ========== 可扩展融合查询管理器==========
 class ExtensibleFusionQueryManager:
     def __init__(self):
         self.original_enabled = True
         self.ipa_enabled = ENABLE_IPA_MATCH
         self.ipa_recognizer = None
+        self.pinyin_recognizer = DynamicPinyinRecognizer()
+        self.known_ipa_forms = set()
 
         if self.ipa_enabled:
             try:
@@ -129,26 +209,47 @@ class ExtensibleFusionQueryManager:
 
                 # 从新 IPA 匹配器获取所有 IPA 列表
                 all_ipa = matcher_manager.ipa_matcher.all_ipa_list
+                tone_free_ipa = getattr(matcher_manager.ipa_matcher, "all_tone_free_ipa_list", [])
+                self.known_ipa_forms = {self._strip_route_marks(item) for item in all_ipa + tone_free_ipa}
                 cache = IPACharCache(all_ipa)
                 self.valid_ipa_chars = cache.get_chars()
-                self.ipa_recognizer = DynamicIPARecognizer(self.valid_ipa_chars)
+                self.ipa_recognizer = DynamicIPARecognizer(self.valid_ipa_chars, self.known_ipa_forms)
 
             except Exception as e:
                 print(f"IPA 模块加载失败：{e}")
                 self.ipa_enabled = False
 
+    @staticmethod
+    def _strip_route_marks(text: str) -> str:
+        return re.sub(r"[\d\s'’`]+", "", str(text).strip().lower())
+
+    def _route_query(self, user_input: str) -> str:
+        if re.search(r"[\u4e00-\u9fa5]", user_input):
+            return "original"
+
+        if self.ipa_enabled and self.ipa_recognizer and self.ipa_recognizer.is_ipa_input(user_input):
+            return "ipa"
+
+        if self.pinyin_recognizer.is_pinyin_input(user_input):
+            return "pinyin"
+
+        return "original"
+
     def query(self, user_input: str) -> str:
-        if self.ipa_enabled and self.ipa_recognizer.is_ipa_input(user_input):
+        route = self._route_query(user_input)
+
+        if route == "ipa":
             return self._ipa_query_path(user_input)
-        else:
-            return self._original_query_path(user_input)
+        if route == "pinyin":
+            return self._pinyin_query_path(user_input)
+        return self._original_query_path(user_input)
 
     def _ipa_query_path(self, user_input: str) -> str:
         """
         新版 IPA 查询：
         自动支持 → 简易发音精准 + 标准IPA精准 + 模糊匹配
         """
-        res = self.ipa_matcher.ipa_query(user_input, top_k=5)
+        res = self.ipa_matcher.ipa_query(user_input, top_k=3)
         if res:
             return format_result(self._adapt(res))
         return "未匹配到对应 IPA 词条"
@@ -159,8 +260,8 @@ class ExtensibleFusionQueryManager:
         return format_result(result)
 
     def _pinyin_query_path(self, user_input: str) -> str:
-        """预留拼音接口，未来直接实现"""
-        return "拼音匹配功能尚未开放"
+        """预留拼音接口，当前仅占位，不影响主分流。"""
+        return "拼音匹配功能已预留，当前尚未开放"
 
     def _adapt(self, res):
         adapted = []
@@ -185,7 +286,8 @@ def main():
     print("1. 方言词查询")
     print("2. 普通话 / 释义查询")
     if ENABLE_IPA_MATCH and manager.ipa_enabled:
-        print("3. IPA / 简易发音查询（支持精准 + 模糊）")
+        print("3. IPA查询（精准 + 模糊）")
+    # print("4. 拼音查询（路由已预留）")
     print("输入 q/quit 退出\n")
 
     while True:
