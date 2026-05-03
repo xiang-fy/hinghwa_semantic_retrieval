@@ -1,7 +1,16 @@
 import re
 import Levenshtein
 from typing import List, Dict
-from .ipa_constants import CONFUSION_MAP, TONE_MAP
+from .ipa_constants import (
+    CONFUSION_MAP, 
+    TONE_MAP, 
+    SANDHI_RULES, 
+    ASR_ERROR_MAP,
+    SANDHI_CONSONANTS,
+    ACCENT_MAP,
+    MATCH_WEIGHTS,
+    SAFETY_CONSTRAINTS
+)
 from src.data_loader import get_full_df, FIELD_MAPPING
 from src.utils.common_utils import clean_ipa_str
 
@@ -161,51 +170,108 @@ class IPAMatcher:
     # ============================================================
     def _generate_fuzzy_candidates(self, clean_input: str) -> List[str]:
         """
-        生成模糊候选串
-        修复问题：确保候选生成逻辑正确
-        """
-        if self.debug:
-            print(f"[模糊候选] 输入: {clean_input}")
+        优雅的模糊候选生成 - 融合创新与安全
         
+        设计特点：
+        1. 分层处理：字符级→多字符→声调→类化
+        2. 安全约束：避免过度泛化，限制候选数量
+        3. 智能应用：仅在合适场景应用高级规则
+        """
         candidates = {clean_input}
         has_glottal = "ʔ" in clean_input
+        
+        # 安全约束：限制候选生成数量
+        max_candidates = SAFETY_CONSTRAINTS["max_candidate_generation"]
 
-        # 1. 字符级混淆替换（严格约束ʔ）
-        temp = list(candidates)
-        for cand in temp:
+        # 1. 基础字符级混淆替换
+        candidates = self._apply_char_level_confusion(candidates, has_glottal)
+        
+        # 2. 多字符韵母替换（您的创新）
+        candidates = self._apply_multi_char_replacement(candidates)
+        
+        # 3. 声调兼容处理
+        candidates = self._apply_tone_compatibility(candidates, has_glottal)
+        
+        # 4. 语音识别误差处理（我的补充）
+        candidates = self._apply_asr_error_handling(candidates)
+        
+        # 5. 安全过滤：限制候选数量
+        candidates = list(candidates)[:max_candidates]
+        
+        return candidates
+    
+    def _apply_char_level_confusion(self, candidates: set, has_glottal: bool) -> set:
+        """应用字符级混淆替换（安全约束版）"""
+        result = set(candidates)
+        
+        for cand in list(candidates):
             for idx, char in enumerate(cand):
+                # 优先使用CONFUSION_MAP
                 if char in CONFUSION_MAP:
-                    # ʔ仅等价替换，绝不删除
                     for rep in CONFUSION_MAP[char]:
                         new_cand = cand[:idx] + rep + cand[idx+1:]
-                        candidates.add(new_cand)
-
-        # 2. 音节声调拆分兼容（收紧声调映射）
+                        # 安全约束：ʔ必须保留
+                        if has_glottal and "ʔ" not in new_cand:
+                            continue
+                        result.add(new_cand)
+        
+        return result
+    
+    def _apply_multi_char_replacement(self, candidates: set) -> set:
+        """应用多字符替换（您的创新）"""
+        result = set(candidates)
+        
+        for cand in list(candidates):
+            # 查找多字符韵母进行替换
+            for pattern, replacements in CONFUSION_MAP.items():
+                if len(pattern) > 1 and pattern in cand:
+                    for rep in replacements:
+                        new_cand = cand.replace(pattern, rep)
+                        result.add(new_cand)
+        
+        return result
+    
+    def _apply_tone_compatibility(self, candidates: set, has_glottal: bool) -> set:
+        """应用声调兼容处理"""
+        result = set(candidates)
         syl_re = re.compile(r"([a-zɒɔøŋɬʔβ]+)([0-9]+)?")
-        temp = list(candidates)
-        for cand in temp:
+        
+        for cand in list(candidates):
             parts = syl_re.findall(cand)
             if not parts:
                 continue
+                
             combs = [[]]
             for base, tone in parts:
-                # 声调严格兼容，不再全部互通
+                # 使用扩展的TONE_MAP
                 tone_list = TONE_MAP.get(tone, [tone]) if tone else [""]
                 new_comb = []
                 for pre in combs:
                     for t in tone_list:
                         new_comb.append(pre + [(base, t)])
                 combs = new_comb
+                
             for cb in combs:
                 new_s = "".join(b + t for b, t in cb)
-                # 核心约束：原始输入带ʔ，候选必须也携带ʔ
+                # 安全约束：ʔ必须保留
                 if has_glottal and "ʔ" not in new_s:
                     continue
-                candidates.add(new_s)
+                result.add(new_s)
         
-        if self.debug:
-            print(f"[模糊候选] 生成候选: {len(candidates)}个")
-        return list(candidates)
+        return result
+    
+    def _apply_asr_error_handling(self, candidates: set) -> set:
+        """应用语音识别误差处理（我的补充）"""
+        result = set(candidates)
+        
+        for cand in list(candidates):
+            for idx, char in enumerate(cand):
+                if char in ASR_ERROR_MAP:
+                    for rep in ASR_ERROR_MAP[char]:
+                        new_cand = cand[:idx] + rep + cand[idx+1:]
+                        result.add(new_cand)
+        
+        return result
 
     def _rule_fuzzy_match(self, clean_input: str) -> List[Dict]:
         if not self.enable_rule_fuzzy:
@@ -306,27 +372,133 @@ class IPAMatcher:
 
     def weighted_score_calc(self, query_ipa: str, db_ipa: str) -> float:
         """
-        三段加权综合打分核心函数
-        修复问题：确保评分逻辑正确
+        优雅的加权评分算法 - 融合创新与安全
+        
+        设计特点：
+        1. 智能权重分配：根据混淆类型动态调整
+        2. 安全约束：避免过度匹配
+        3. 多维度评估：字符、声调、类化等
         """
-        q_pre, q_mid, q_suf = self.split_ipa(query_ipa)
-        d_pre, d_mid, d_suf = self.split_ipa(db_ipa)
-
-        pre_sim = self.segment_sim(q_pre, d_pre)
-        mid_sim = self.segment_sim(q_mid, d_mid)
-        suf_sim = self.segment_sim(q_suf, d_suf)
-
-        total_score = pre_sim * 0.6 + mid_sim * 0.1 + suf_sim * 0.3
-
-        # 残缺输入强制高分置顶
-        if q_pre == d_pre and q_suf == d_suf:
-            total_score = max(total_score, 0.90)
-
-        # 全局入声硬过滤
+        # 安全约束：ʔ必须匹配
         if "ʔ" in query_ipa and "ʔ" not in db_ipa:
             return 0.0
 
+        # 分段处理
+        q_pre, q_mid, q_suf = self.split_ipa(query_ipa)
+        d_pre, d_mid, d_suf = self.split_ipa(db_ipa)
+
+        # 智能权重分配
+        pre_sim = self._smart_segment_sim(q_pre, d_pre, "prefix")
+        mid_sim = self._smart_segment_sim(q_mid, d_mid, "middle") 
+        suf_sim = self._smart_segment_sim(q_suf, d_suf, "suffix")
+
+        # 动态权重调整
+        weights = self._dynamic_weight_adjustment(q_pre, d_pre, q_suf, d_suf)
+        total_score = pre_sim * weights[0] + mid_sim * weights[1] + suf_sim * weights[2]
+
+        # 特殊规则：残缺输入高分召回
+        if q_pre == d_pre and q_suf == d_suf:
+            total_score = max(total_score, 0.90)
+
+        # 应用连读调变加权
+        total_score = self._apply_sandhi_weight(query_ipa, db_ipa, total_score)
+
         return round(total_score, 3)
+    
+    def _smart_segment_sim(self, query: str, target: str, segment_type: str) -> float:
+        """智能片段相似度计算"""
+        if query == target:
+            return MATCH_WEIGHTS["exact_match"]
+        if not query or not target:
+            return 0.0
+
+        # 基础编辑距离
+        base_sim = 1.0 - Levenshtein.distance(query, target) / max(len(query), len(target))
+        
+        # 混淆关系检测
+        confusion_factor = self._detect_confusion_relation(query, target)
+        
+        # 智能权重融合
+        if confusion_factor > 0.8:
+            # 高混淆关系，降低编辑距离权重
+            score = base_sim * 0.4 + confusion_factor * 0.6
+        else:
+            # 低混淆关系，保持编辑距离主导
+            score = base_sim * 0.7 + confusion_factor * 0.3
+            
+        return score
+    
+    def _detect_confusion_relation(self, query: str, target: str) -> float:
+        """检测混淆关系（多维度评估）"""
+        if query == target:
+            return 1.0
+
+        confusion_score = 0.0
+        max_len = max(len(query), len(target))
+        
+        for i in range(min(len(query), len(target))):
+            q_char = query[i]
+            t_char = target[i]
+            
+            # 检查CONFUSION_MAP
+            if q_char in CONFUSION_MAP and t_char in CONFUSION_MAP[q_char]:
+                confusion_score += MATCH_WEIGHTS["consonant_confusion"]
+            elif t_char in CONFUSION_MAP and q_char in CONFUSION_MAP[t_char]:
+                confusion_score += MATCH_WEIGHTS["consonant_confusion"]
+            
+            # 检查ASR_ERROR_MAP
+            elif q_char in ASR_ERROR_MAP and t_char in ASR_ERROR_MAP[q_char]:
+                confusion_score += MATCH_WEIGHTS["asr_error"]
+            elif t_char in ASR_ERROR_MAP and q_char in ASR_ERROR_MAP[t_char]:
+                confusion_score += MATCH_WEIGHTS["asr_error"]
+            
+            # 检查多字符匹配
+            elif self._check_multi_char_match(query, target, i):
+                confusion_score += MATCH_WEIGHTS["vowel_confusion"]
+            
+            elif q_char == t_char:
+                confusion_score += 1.0
+        
+        return confusion_score / max_len if max_len > 0 else 0.0
+    
+    def _check_multi_char_match(self, query: str, target: str, start_idx: int) -> bool:
+        """检查多字符匹配"""
+        # 检查是否存在多字符韵母匹配
+        for pattern in CONFUSION_MAP:
+            if len(pattern) > 1:
+                if query.startswith(pattern, start_idx) and target.startswith(pattern, start_idx):
+                    return True
+                # 检查混淆关系
+                for rep in CONFUSION_MAP[pattern]:
+                    if (query.startswith(pattern, start_idx) and target.startswith(rep, start_idx)) or \
+                       (query.startswith(rep, start_idx) and target.startswith(pattern, start_idx)):
+                        return True
+        return False
+    
+    def _dynamic_weight_adjustment(self, q_pre: str, d_pre: str, q_suf: str, d_suf: str) -> tuple:
+        """动态权重调整"""
+        # 基础权重
+        base_weights = (0.6, 0.1, 0.3)
+        
+        # 如果前缀匹配度高，适当增加前缀权重
+        if q_pre and d_pre and self._smart_segment_sim(q_pre, d_pre, "prefix") > 0.8:
+            return (0.7, 0.05, 0.25)
+        
+        # 如果后缀匹配度高，适当增加后缀权重
+        if q_suf and d_suf and self._smart_segment_sim(q_suf, d_suf, "suffix") > 0.8:
+            return (0.5, 0.1, 0.4)
+        
+        return base_weights
+    
+    def _apply_sandhi_weight(self, query_ipa: str, db_ipa: str, score: float) -> float:
+        """应用连读调变加权"""
+        for original_tone, sandhi_map in SANDHI_RULES.items():
+            if original_tone in query_ipa:
+                for target_tone, change_to in sandhi_map.items():
+                    if target_tone in db_ipa or change_to in db_ipa:
+                        score *= MATCH_WEIGHTS["sandhi_rule"]
+                        break
+        return score
 
     def _edit_distance_match(self, clean_input: str) -> List[Dict]:
         if not self.enable_edit_fuzzy:
@@ -401,9 +573,10 @@ class IPAMatcher:
         return unique[:3]
 
     # ============================================================
-    # 对外统一调用入口（三层递进命中即停）
+    # 对外统一调用入口（融合模式）
+    # 收集所有层的结果，去重排序后返回指定数量
     # ============================================================
-    def match(self, query: str, top_k: int = 4):
+    def match(self, query: str, top_k: int = 5):
         clean_q = clean_ipa_str(query)
         if not clean_q:
             return []
@@ -413,19 +586,42 @@ class IPAMatcher:
             print(f"原始输入: {query}")
             print(f"清理后: {clean_q}")
 
-        res = self._precise_match(clean_q)
-        if res:
-            if self.debug:
-                print(f"[结果] 精准匹配成功: {len(res)}条")
-            return res[:top_k]
+        # 收集所有匹配结果
+        all_results = []
 
-        res = self._rule_fuzzy_match(clean_q)
-        if res:
-            if self.debug:
-                print(f"[结果] 规则模糊匹配成功: {len(res)}条")
-            return res[:top_k]
-
-        res = self._edit_distance_match(clean_q)
+        # 第一层：精准匹配（权重最高）
+        precise_res = self._precise_match(clean_q)
         if self.debug:
-            print(f"[结果] 编辑距离匹配: {len(res)}条")
-        return res[:top_k]
+            print(f"[匹配] 精准匹配: {len(precise_res)}条")
+        for r in precise_res:
+            r['匹配类型'] = '精准匹配'
+            r['匹配权重'] = 1.0
+            all_results.append(r)
+
+        # 第二层：规则模糊匹配
+        fuzzy_res = self._rule_fuzzy_match(clean_q)
+        if self.debug:
+            print(f"[匹配] 规则模糊匹配: {len(fuzzy_res)}条")
+        for r in fuzzy_res:
+            if r['方言词'] not in [x['方言词'] for x in all_results]:
+                r['匹配类型'] = '规则模糊'
+                r['匹配权重'] = 0.9
+                all_results.append(r)
+
+        # 第三层：编辑距离匹配
+        edit_res = self._edit_distance_match(clean_q)
+        if self.debug:
+            print(f"[匹配] 编辑距离匹配: {len(edit_res)}条")
+        for r in edit_res:
+            if r['方言词'] not in [x['方言词'] for x in all_results]:
+                r['匹配类型'] = '编辑距离'
+                r['匹配权重'] = 0.7
+                all_results.append(r)
+
+        # 按相似度和权重排序
+        all_results.sort(key=lambda x: (x.get('匹配权重', 0), x.get('相似度', 0)), reverse=True)
+
+        if self.debug:
+            print(f"[结果] 合并去重后: {len(all_results)}条")
+
+        return all_results[:top_k]

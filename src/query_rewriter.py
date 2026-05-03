@@ -8,11 +8,13 @@ from dotenv import load_dotenv
 # ====================== 配置：替换为你的API密钥 ======================
 load_dotenv()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # 使用LLMAPI进行查询解析
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")  # 轻量模型，响应快
 # ==========================================================================
 
 def parse_query(user_query: str) -> dict:
     """调用LLM API，解析用户查询：提取核心词+判断类型"""
-    url = "https://api.deepseek.com/chat/completions"
+    url = f"{DEEPSEEK_BASE_URL}/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
@@ -44,7 +46,7 @@ def parse_query(user_query: str) -> dict:
 """
     # 调用API（轻量模型，响应快）
     data = {
-        "model": "deepseek-chat",  # 轻量模型，处理快
+        "model": DEEPSEEK_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1,  # 低温保证输出稳定
         "max_tokens": 100

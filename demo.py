@@ -249,7 +249,7 @@ class ExtensibleFusionQueryManager:
         新版 IPA 查询：
         自动支持 → 简易发音精准 + 标准IPA精准 + 模糊匹配
         """
-        res = self.ipa_matcher.ipa_query(user_input, top_k=3)
+        res = self.ipa_matcher.ipa_query(user_input, top_k=5)
         if res:
             return format_result(self._adapt(res))
         return "未匹配到对应 IPA 词条"
@@ -296,7 +296,7 @@ def main():
             print("再见！")
             break
         if not user_input:
-            print("查询不能为空，请重新输入！\n")
+            print("查询不能为空，请重新输入！\n") 
             continue
 
         try:
