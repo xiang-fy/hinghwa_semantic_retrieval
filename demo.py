@@ -1,5 +1,3 @@
-from src.query_rewriter import parse_query
-from src.vector_db import core_search
 from src.result_formatter import format_result
 # ========== 新架构导入 ==========
 from src.matcher import MatcherManager
@@ -255,8 +253,8 @@ class ExtensibleFusionQueryManager:
         return "未匹配到对应 IPA 词条"
 
     def _original_query_path(self, user_input: str) -> str:
-        parsed = parse_query(user_input)
-        result = core_search(parsed)
+        # 使用 MatcherManager 中封装的原始查询入口（parse_query + core_search）
+        result = self.ipa_matcher.core_query(user_input)
         return format_result(result)
 
     def _pinyin_query_path(self, user_input: str) -> str:
