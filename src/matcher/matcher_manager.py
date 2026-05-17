@@ -2,6 +2,7 @@ from typing import List, Dict
 from .ipa_matcher import IPAMatcher
 from .dialect_matcher import DialectWordMatcher
 from .core_matcher import CoreMatcher
+from .pinyin_matcher import PinyinMatcher
 
 
 class MatcherManager:
@@ -13,15 +14,13 @@ class MatcherManager:
     def __init__(self):
         # ====================== 已实现模块 ======================
         self.ipa_matcher = IPAMatcher()
-        # 新增：方言词与原始查询（普通话/释义）匹配器
+        # 方言词与原始查询（普通话/释义）匹配器
         self.dialect_word_matcher = DialectWordMatcher()
         self.core_matcher = CoreMatcher()
+        # 拼音匹配器
+        self.pinyin_matcher = PinyinMatcher()
 
         # ====================== 未来预留模块（空接口占位，无需实现） ======================
-        # 后续新增：拼音匹配器
-        # self.pinyin_matcher = PinyinMatcher()
-        # 后续新增：方言纯文字匹配器
-        # self.dialect_word_matcher = DialectWordMatcher()
         # 后续新增：语义向量检索匹配器
         # self.semantic_matcher = SemanticMatcher()
 
@@ -37,12 +36,10 @@ class MatcherManager:
         """原始查询统一入口（parse_query + core_search）"""
         return self.core_matcher.match(query, top_k)
 
+    def pinyin_query(self, query: str, top_k: int = 3) -> List[Dict]:
+        """拼音查询统一入口"""
+        return self.pinyin_matcher.match(query, top_k)
+
     # ====================== 未来预留统一接口（严格对齐BaseMatcher） ======================
-    # def pinyin_query(self, query: str, top_k: int = 3) -> List[Dict]:
-    #     return self.pinyin_matcher.match(query, top_k)
-    #
-    # def dialect_word_query(self, query: str, top_k: int = 3) -> List[Dict]:
-    #     return self.dialect_word_matcher.match(query, top_k)
-    #
     # def semantic_query(self, query: str, top_k: int = 3) -> List[Dict]:
     #     return self.semantic_matcher.match(query, top_k)

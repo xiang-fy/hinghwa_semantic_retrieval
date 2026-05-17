@@ -1,6 +1,7 @@
 from src.result_formatter import format_result
 # ========== 新架构导入 ==========
 from src.matcher import MatcherManager
+from src.pre_intent_classifier import PreIntentClassifier
 from src.utils.common_utils import clean_ipa_str
 from src.data_loader import FIELD_MAPPING
 from typing import List, Dict, Optional, Set
@@ -29,6 +30,9 @@ DATASET_SIGNATURE = os.path.join(CACHE_DIR, "dataset_signature.txt")
 
 # ========== 全局统一匹配管理器（新架构核心）==========
 matcher_manager = MatcherManager()
+
+# ========== 前置意图分类器 ==========
+intent_classifier = PreIntentClassifier()
 
 # ========== 模块化意图提取器（未来扩展用） ==========
 class IntentExtractor:
@@ -234,13 +238,23 @@ class ExtensibleFusionQueryManager:
         return "original"
 
     def query(self, user_input: str) -> str:
-        route = self._route_query(user_input)
-
-        if route == "ipa":
+        """统一查询入口：使用前置意图分类器进行分流"""
+        # 使用前置意图分类器判断意图
+        classification = intent_classifier.classify(user_input)
+        intent = classification["intent"]
+        confidence = classification["confidence"]
+        
+        print(f"[意图识别] 类型: {intent}, 置信度: {confidence:.2f}")
+        
+        # 根据意图类型调用对应匹配器
+        if intent == "dialect":
+            return self._dialect_query_path(user_input)
+        elif intent == "ipa":
             return self._ipa_query_path(user_input)
-        if route == "pinyin":
+        elif intent == "pinyin":
             return self._pinyin_query_path(user_input)
-        return self._original_query_path(user_input)
+        else:  # text 或 mixed
+            return self._original_query_path(user_input)
 
     def _ipa_query_path(self, user_input: str) -> str:
         """
@@ -257,9 +271,19 @@ class ExtensibleFusionQueryManager:
         result = self.ipa_matcher.core_query(user_input)
         return format_result(result)
 
+    def _dialect_query_path(self, user_input: str) -> str:
+        """方言词查询路径"""
+        res = matcher_manager.dialect_word_query(user_input, top_k=5)
+        if res:
+            return format_result(self._adapt(res))
+        return "未匹配到对应方言词条"
+
     def _pinyin_query_path(self, user_input: str) -> str:
-        """预留拼音接口，当前仅占位，不影响主分流。"""
-        return "拼音匹配功能已预留，当前尚未开放"
+        """拼音查询路径"""
+        res = matcher_manager.pinyin_query(user_input, top_k=5)
+        if res:
+            return format_result(self._adapt(res))
+        return "未匹配到对应拼音词条"
 
     def _adapt(self, res):
         adapted = []
@@ -285,7 +309,7 @@ def main():
     print("2. 普通话 / 释义查询")
     if ENABLE_IPA_MATCH and manager.ipa_enabled:
         print("3. IPA查询（精准 + 模糊）")
-    # print("4. 拼音查询（路由已预留）")
+    print("4. 拼音查询")
     print("输入 q/quit 退出\n")
 
     while True:
