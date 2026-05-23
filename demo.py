@@ -158,7 +158,7 @@ class IPACharCache:
         try:
             content = "|".join(self.all_ipa_list)
             return hashlib.md5(content.encode("utf-8")).hexdigest()
-        except:
+        except Exception:
             return "unknown"
 
     def load(self) -> Optional[Set[str]]:

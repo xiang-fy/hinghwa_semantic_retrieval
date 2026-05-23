@@ -10,267 +10,21 @@
 import re
 from typing import List, Dict, Tuple, Optional
 from itertools import product
+# 将映射与规则从独立模块导入，以实现解耦
+from .pinyin_mappings import (
+    PUTIAN_INITIALS, INITIAL_SANDHI, PUTIAN_FINALS,
+    ACCENT_VARIANTS, ACCENT_IPA_MAP,
+    MANDARIN_TO_PUTIAN_INITIALS, MANDARIN_TO_PUTIAN_FINALS,
+    MANDARIN_PRONUNCIATION_MAP, TONE_MAP
+)
+
+BASE_SYLLABLE_WEIGHT = 1.0
+ACCENT_IPA_WEIGHT = 0.85
+ACCENT_VARIANT_WEIGHT = 0.7
+
 
 # ============================================================
-# 一、莆仙话拼音到 IPA 的映射（基于莆仙话拼音方案 + 韵母对照表）
-# ============================================================
-
-# 声母映射（莆拼 → IPA，参考规范文档）
-# 注意：莆仙话拼音即为数据集中的简易发音字段
-PUTIAN_INITIALS = {
-    'b': 'p', 'p': 'pʰ', 'bb': 'b',
-    'd': 't', 't': 'tʰ', 'dd': 'd',
-    'g': 'k', 'k': 'kʰ', 'gg': 'g',
-    'z': 'ts', 'c': 'tsʰ', 'zz': 'dz',
-    's': 'ɬ',          # 莆拼 s 对应 IPA ɬ（边擦音）或 θ（齿擦音），本系统统一用 ɬ
-    'l': 'l',
-    'm': 'm', 'n': 'n', 'ng': 'ŋ',
-    'h': 'h',          # 主流口音 h 读 h
-    'j': 'ts', 'q': 'tsʰ', 'x': 'ɬ',
-    'r': 'l',          # 部分口音 r 读 l
-    '': ''
-}
-
-# 声母类化规则（连读时的声母变化）
-INITIAL_SANDHI = {
-    'p': ['p', 'b', 'm', ''],   # p→b/m/消失（类化）
-    't': ['t', 'd', 'n', 'l', ''],  # t→d/n/l/消失
-    'k': ['k', 'g', 'ŋ', ''],   # k→g/ŋ/消失
-    'ts': ['ts', 'dz', 'l', 's'],  # ts→dz/l/s
-    'tsʰ': ['tsʰ', 'dz', 'l', 's'],
-    'ɬ': ['ɬ', 'l', 's'],       # ɬ→l/s
-    'm': ['m', 'b', ''],         # m→b/消失
-    'n': ['n', 'd', 'l', ''],    # n→d/l/消失
-    'ŋ': ['ŋ', 'g', ''],         # ŋ→g/消失
-}
-
-# 韵母映射（莆拼 → IPA 候选，支持多候选）
-# 依据莆拼规范文档及韵母对照表整理
-# 莆仙话拼音即为数据集中的简易发音字段
-PUTIAN_FINALS = {
-    # 单韵母
-    'a': ['a'],
-    'e': ['e'],
-    'i': ['i'],
-    'o': ['o'],            # 标准发音
-    'u': ['u'],
-    'y': ['y'],
-    'ae': ['ɛ'],           # 用于少数词
-    'oe': ['ø'],
-    'or': ['ɒ'],           # 莆田城里腔
-    'er': ['ə'],
-    'oo': ['ɔ'],
-    # 复韵母
-    'ai': ['ai'],
-    'au': ['au'],
-    'ao': ['au'],          # ao 与 au 同音
-    'ia': ['ia'],
-    'ie': ['ie'],
-    'ieo': ['ieu'],
-    'iu': ['iu'],
-    'io': ['io'],
-    'ua': ['ua'],
-    'uo': ['uo'],
-    'ui': ['ui'],
-    'ue': ['ue'],
-    'uai': ['uai'],
-    'uei': ['uei'],
-    'yo': ['yo'],
-    'ye': ['ye'],
-    'yoe': ['yø'],
-    # 鼻化韵（带鼻音的韵母）
-    'ann': ['aŋ'],
-    'enn': ['eŋ'],
-    'inn': ['iŋ'],
-    'onn': ['oŋ'],
-    'unn': ['uŋ'],
-    'iann': ['iaŋ'],
-    'iunn': ['iuŋ'],
-    'uann': ['uaŋ'],
-    'uinn': ['uiŋ'],
-    # 入声韵（带喉塞音结尾）
-    'ah': ['aʔ'],
-    'eh': ['eʔ'],
-    'ih': ['iʔ'],
-    'oh': ['oʔ'],
-    'uh': ['uʔ'],
-    'yh': ['yʔ'],
-    'oeh': ['øʔ'],
-    'orh': ['ɒʔ'],
-}
-
-# 口音差异映射（基于興化各地口音對照表）
-ACCENT_VARIANTS = {
-    '仙游': {
-        'o': ['ɵ'],          # 仙游 o 偏 ɵ
-        'ɬ': ['θ'],          # 仙游部分区域 ɬ→θ
-    },
-    '涵江': {
-        'ŋ': ['n'],          # 涵江部分 ng→n
-    },
-    '城厢': {
-        'or': ['ɒ'],         # 城厢 or 读 ɒ
-    },
-}
-
-# 各地口音差异映射（基于興化各地口音對照表）
-# 键为口音名称，值为 (原IPA, 替换后IPA) 的映射列表
-ACCENT_IPA_MAP = {
-    '仙游': [
-        ('ɬ', 'θ'),      # 仙游部分区域 ɬ → θ
-        ('o', 'ɵ'),      # 韵母 o 偏 ɵ
-        ('iŋ', 'iŋ'),    # 无变化，但可留作扩展
-    ],
-    '江口': [
-        ('aŋ', 'aŋ'),    # 江口部分字读 aŋ 为 aŋ（实际同）
-        ('u', 'u'),      # 无显著差异
-    ],
-    '涵江': [
-        ('ŋ', 'n'),      # 部分 ng 声母读 n
-    ],
-}
-# 实际使用时，可根据需要从口音对照表动态读取，此处简化
-
-# ============================================================
-# 二、普通话发音描述 → 莆仙话发音映射（核心修正）
-# 目的：用户用普通话拼音描述方言词的发音，系统转换为莆仙话IPA
-# 例如：用户说"doufu"描述豆腐的发音 → 系统理解为莆仙话"tauhu"
-# 参考：聲母類化規律及興化各地口音對照表
-# ============================================================
-
-# 声母映射：普通话发音 → 莆仙话发音
-# 依据实际音系对应，如：清 qing4 → 莆仙话 cing4 → IPA tshiŋ42
-MANDARIN_TO_PUTIAN_INITIALS = {
-    'b': ['p'],                # 波 → 坡
-    'p': ['pʰ', 'p'],          # 坡 → 坡/波
-    'm': ['m'],
-    'f': ['h'],                # 佛 → 霍（莆仙话无 f）
-    'd': ['t'],
-    't': ['tʰ', 't'],
-    'n': ['n', 'l'],           # 部分口音 n/l 不分
-    'l': ['l', 'n'],
-    'g': ['k'],
-    'k': ['kʰ', 'k'],
-    'h': ['h'],
-    'j': ['ts'],               # 鸡 → 资（舌面音变舌尖音）
-    'q': ['tsʰ'],              # 七 → 雌（如清 qing → cing）
-    'x': ['s', 'ɬ'],           # 西 → 斯/希
-    'z': ['ts'],
-    'c': ['tsʰ'],
-    's': ['s', 'ɬ'],
-    'zh': ['ts'],              # 知 → 资
-    'ch': ['tsʰ'],             # 吃 → 雌
-    'sh': ['s', 'ɬ'],          # 诗 → 斯/希
-    'r': ['l'],                # 日 → 啦
-    'y': [''],
-    'w': [''],
-    '': ['']
-}
-
-# 韵母映射：普通话发音描述 → 莆仙话发音
-# 依据实际音系对应，如：六 liu → 莆仙话 lau，天 tian → 莆仙话 nang
-MANDARIN_TO_PUTIAN_FINALS = {
-    # 单韵母
-    'a': ['a'],
-    'o': ['o'],
-    'e': ['e'],
-    'i': ['i'],
-    'u': ['u'],
-    'ü': ['y'],
-
-    # 复韵母
-    'ai': ['ai'],
-    'ei': ['ei'],
-    'ao': ['au'],
-    'ou': ['u'],               # 豆 dou → tau（ou→u）
-
-    # 鼻韵母（莆仙话前后鼻音不分）
-    'an': ['aŋ'],
-    'en': ['eŋ'],
-    'in': ['iŋ'],
-    'un': ['uŋ'],
-    'ün': ['yŋ'],
-    'ang': ['aŋ'],
-    'eng': ['eŋ'],
-    'ing': ['iŋ'],
-    'ong': ['uŋ'],
-
-    # 齐齿呼
-    'ia': ['ia'],
-    'ie': ['i', 'ie'],         # 姨 yi → i（ie→i）
-    'iao': ['iau'],
-    'iu': ['au', 'iu'],        # 六 liu → lau（iu→au）
-    'ian': ['aŋ', 'ian'],      # 天 tian → nang（ian→aŋ）
-    'iang': ['iaŋ'],
-    'iong': ['yŋ'],
-
-    # 合口呼
-    'ua': ['ua'],
-    'uo': ['uo'],
-    'uai': ['uai'],
-    'ui': ['ui'],
-    'uan': ['uaŋ'],
-    'uang': ['uaŋ'],
-
-    # 撮口呼
-    'üe': ['yø'],
-
-    # 特殊
-    'er': ['ə']
-}
-
-# 常用词语发音映射（普通话发音描述 → 莆仙话发音）
-# 用户用普通话描述方言词发音，系统直接映射到正确的莆仙话发音
-# 参考：莆仙话拼音方案规范文档及实际方言词典数据
-MANDARIN_PRONUNCIATION_MAP = {
-    # 基础词汇（按拼音首字母排序）
-    'a': ['a'],
-    'ba': ['pa', 'ba'],
-    'dou': ['tau'],           # 豆 dou → tau
-    'fu': ['hu'],             # 腐 fu → hu（莆仙话无f音）
-    'jie': ['i'],             # 姨 yi → i
-    'liu': ['lau'],           # 六 liu → lau（iu→au）
-    'ma': ['ma'],
-    'ren': ['lang', 'nin'],   # 人 ren → lang
-    'shui': ['cui'],          # 水 shui → cui
-    'tian': ['nang'],         # 天 tian → nang（ian→aŋ）
-    'yue': ['gueh'],          # 月 yue → gueh
-
-    # 常见短语
-    'doufu': ['tau hu'],      # 豆腐 doufu → tau hu
-    'liuyuetian': ['lah gue nang'],  # 六月天 liuyuetian → lah gue nang
-    'ajie': ['a i'],          # 阿姨 ajie → a i
-    'baba': ['a pa'],         # 爸爸 baba → a pa
-    'mama': ['a ma'],         # 妈妈 mama → a ma
-    'shuihu': ['cui hu'],     # 水浒 shuihu → cui hu
-    'renmin': ['lang min'],   # 人民 renmin → lang min
-
-    # 方言特色词（直接映射莆仙话发音）
-    'langba': ['lor ba'],     # 郎罢（父亲）
-    'age': ['a go'],          # 阿公（爷爷）
-    'ayi': ['a i'],           # 阿姨
-    'nainai': ['a na'],       # 奶奶
-    'dian': ['tiang'],        # 店
-    'qing': ['cing'],         # 清 qing → cing（q→c）
-    'hong': ['ang'],          # 红 hong → ang
-}
-
-# ============================================================
-# 声调映射（仅用于生成 IPA 调值，实际查询时会忽略调值数字）
-# ============================================================
-TONE_MAP = {
-    '1': ['1', '533', '55'],
-    '2': ['2', '13', '24', '35'],
-    '3': ['3', '453', '332'],
-    '4': ['4', '42'],
-    '5': ['5', '21', '11'],
-    '6': ['6', '21', '1'],
-    '7': ['7', '4', '24'],
-    '8': ['8', '35'],
-}
-
-# ============================================================
-# 三、拼音切分函数（核心）
+# 拼音切分与解析工具
 # ============================================================
 
 def split_putian_syllable(syl: str) -> Tuple[str, str]:
@@ -280,6 +34,7 @@ def split_putian_syllable(syl: str) -> Tuple[str, str]:
     if syl and syl[0] in 'bpmfdtnlgkhjqxzcszhchshryw':
         return syl[0], syl[1:]
     return '', syl
+
 
 def split_mandarin_syllable(syl: str) -> Tuple[str, str]:
     """拆分普通话音节为声母和韵母"""
@@ -295,6 +50,7 @@ def split_mandarin_syllable(syl: str) -> Tuple[str, str]:
         return syl[0], syl[1:]
     return '', syl
 
+
 def parse_pinyin(pinyin_str: str) -> List[Dict]:
     """
     解析拼音字符串，返回音节列表
@@ -308,7 +64,6 @@ def parse_pinyin(pinyin_str: str) -> List[Dict]:
     if not parts:
         parts = [pinyin_str]
 
-    # 声母和韵母词典（用于无空格切分）
     initials = ['zh','ch','sh','bb','dd','gg','zz','ng',
                 'b','p','m','f','d','t','n','l',
                 'g','k','h','j','q','x','z','c','s','r','w','y']
@@ -368,9 +123,19 @@ def parse_pinyin(pinyin_str: str) -> List[Dict]:
                     i += 1
     return syllables
 
-# ============================================================
-# 四、莆仙拼音 → IPA 候选（权重 1.0，支持多口音）
-# ============================================================
+
+def _dedupe_weighted_candidates(candidates: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
+    unique = {}
+    for ipa, weight in candidates:
+        if ipa not in unique or weight > unique[ipa]:
+            unique[ipa] = weight
+    return list(unique.items())
+
+
+def _is_accent_variant(base_candidates: List[str], candidate: str) -> bool:
+    return candidate not in base_candidates
+
+
 
 def putian_syllable_to_ipa(syl: str, tone: Optional[str] = None) -> List[str]:
     """莆仙拼音音节转 IPA（不带声调数字），包含口音变体"""
@@ -383,17 +148,63 @@ def putian_syllable_to_ipa(syl: str, tone: Optional[str] = None) -> List[str]:
             candidates.append(ipa_init + ipa_final)
         else:
             candidates.append(ipa_final)
-    # 添加口音变体
+
+    # 添加口音变体：先用 ACCENT_IPA_MAP 的精确替换规则
     accent_candidates = []
     for cand in candidates:
+        # 基于 ACCENT_IPA_MAP 的替换（原有规则）
         for accent, rules in ACCENT_IPA_MAP.items():
             new_cand = cand
             for orig, repl in rules:
                 new_cand = new_cand.replace(orig, repl)
             if new_cand != cand:
                 accent_candidates.append(new_cand)
+
+        # 基于 ACCENT_VARIANTS 的变体扩展（替换单个片段为多个候选）
+        for accent, var_map in ACCENT_VARIANTS.items():
+            for orig, repl_list in var_map.items():
+                for repl in repl_list:
+                    new_cand = cand.replace(orig, repl)
+                    if new_cand != cand:
+                        accent_candidates.append(new_cand)
+
+    # 合并候选并去重
     candidates.extend(accent_candidates)
     return list(set(candidates))
+
+
+def putian_syllable_to_ipa_weighted(syl: str, tone: Optional[str] = None) -> List[Tuple[str, float]]:
+    """返回莆仙音节 IPA 候选及权重，口音变体降权。"""
+    initial, final = split_putian_syllable(syl)
+    ipa_init = PUTIAN_INITIALS.get(initial, '')
+    ipa_finals = PUTIAN_FINALS.get(final, [final])
+
+    base_candidates = []
+    for ipa_final in ipa_finals:
+        if ipa_init:
+            base_candidates.append(ipa_init + ipa_final)
+        else:
+            base_candidates.append(ipa_final)
+
+    weighted = [(cand, BASE_SYLLABLE_WEIGHT) for cand in base_candidates]
+
+    accent_candidates = []
+    for cand in base_candidates:
+        for accent, rules in ACCENT_IPA_MAP.items():
+            new_cand = cand
+            for orig, repl in rules:
+                new_cand = new_cand.replace(orig, repl)
+            if new_cand != cand and _is_accent_variant(base_candidates, new_cand):
+                accent_candidates.append((new_cand, ACCENT_IPA_WEIGHT))
+
+        for accent, var_map in ACCENT_VARIANTS.items():
+            for orig, repl_list in var_map.items():
+                for repl in repl_list:
+                    new_cand = cand.replace(orig, repl)
+                    if new_cand != cand and _is_accent_variant(base_candidates, new_cand):
+                        accent_candidates.append((new_cand, ACCENT_VARIANT_WEIGHT))
+
+    return _dedupe_weighted_candidates(weighted + accent_candidates)
 
 def putian_pinyin_to_ipa_candidates(pinyin_str: str) -> List[Tuple[str, float]]:
     """莆仙拼音字符串 → IPA候选列表（带声调数字，权重1.0）"""
@@ -402,17 +213,17 @@ def putian_pinyin_to_ipa_candidates(pinyin_str: str) -> List[Tuple[str, float]]:
         return []
     candidates_per_syl = []
     for syl in syllables:
-        ipa_segs = putian_syllable_to_ipa(syl['initial'] + syl['final'], syl['tone'])
+        ipa_segs = putian_syllable_to_ipa_weighted(syl['initial'] + syl['final'], syl['tone'])
         tone = syl['tone']
         if tone:
             tone_cands = TONE_MAP.get(tone, [tone])
         else:
             tone_cands = ['']
         segs = []
-        for seg in ipa_segs:
+        for seg, seg_weight in ipa_segs:
             for tc in tone_cands:
                 ipa_with_tone = seg + tc
-                segs.append((ipa_with_tone, 1.0))
+                segs.append((ipa_with_tone, seg_weight))
         candidates_per_syl.append(segs)
     # 笛卡尔积
     results = []
@@ -447,7 +258,7 @@ def mandarin_syllable_to_ipa(syl: str) -> List[str]:
             else:
                 candidates.append(ipa_final)
 
-    # 添加口音变体（简单替换）
+    # 添加口音变体：使用 ACCENT_IPA_MAP 和 ACCENT_VARIANTS 两类规则
     accent_candidates = []
     for cand in candidates:
         for accent, rules in ACCENT_IPA_MAP.items():
@@ -456,11 +267,54 @@ def mandarin_syllable_to_ipa(syl: str) -> List[str]:
                 new_cand = new_cand.replace(orig, repl)
             if new_cand != cand:
                 accent_candidates.append(new_cand)
+
+        for accent, var_map in ACCENT_VARIANTS.items():
+            for orig, repl_list in var_map.items():
+                for repl in repl_list:
+                    new_cand = cand.replace(orig, repl)
+                    if new_cand != cand:
+                        accent_candidates.append(new_cand)
+
     candidates.extend(accent_candidates)
 
     # 去重，保留合理数量的候选
     candidates = list(set(candidates))[:3]
     return candidates
+
+
+def mandarin_syllable_to_ipa_weighted(syl: str) -> List[Tuple[str, float]]:
+    """返回普通话音节对应的 IPA 候选及权重，口音变体降权。"""
+    initial, final = split_mandarin_syllable(syl)
+    putian_initials = MANDARIN_TO_PUTIAN_INITIALS.get(initial, [''])
+    putian_finals = MANDARIN_TO_PUTIAN_FINALS.get(final, [final])
+
+    base_candidates = []
+    for ipa_init in putian_initials:
+        for ipa_final in putian_finals:
+            if ipa_init:
+                base_candidates.append(ipa_init + ipa_final)
+            else:
+                base_candidates.append(ipa_final)
+
+    weighted = [(cand, 0.8) for cand in base_candidates]
+
+    accent_candidates = []
+    for cand in base_candidates:
+        for accent, rules in ACCENT_IPA_MAP.items():
+            new_cand = cand
+            for orig, repl in rules:
+                new_cand = new_cand.replace(orig, repl)
+            if new_cand != cand and _is_accent_variant(base_candidates, new_cand):
+                accent_candidates.append((new_cand, ACCENT_IPA_WEIGHT))
+
+        for accent, var_map in ACCENT_VARIANTS.items():
+            for orig, repl_list in var_map.items():
+                for repl in repl_list:
+                    new_cand = cand.replace(orig, repl)
+                    if new_cand != cand and _is_accent_variant(base_candidates, new_cand):
+                        accent_candidates.append((new_cand, ACCENT_VARIANT_WEIGHT))
+
+    return _dedupe_weighted_candidates(weighted + accent_candidates)
 
 def mandarin_pinyin_to_ipa_candidates(pinyin_str: str) -> List[Tuple[str, float]]:
     """普通话发音描述 → 莆仙话IPA候选（权重0.8）"""
@@ -482,9 +336,9 @@ def mandarin_pinyin_to_ipa_candidates(pinyin_str: str) -> List[Tuple[str, float]
 
     candidates_per_syl = []
     for syl in syllables:
-        ipa_segs = mandarin_syllable_to_ipa(syl['initial'] + syl['final'])
+        ipa_segs = mandarin_syllable_to_ipa_weighted(syl['initial'] + syl['final'])
         # 普通话查询不强制加声调（用户可能不知道方言声调）
-        segs = [(seg, 0.8) for seg in ipa_segs]
+        segs = [(seg, weight) for seg, weight in ipa_segs]
         if not segs:
             # 兜底：使用原始拼音片段
             segs = [(syl['initial'] + syl['final'], 0.3)]
@@ -520,22 +374,22 @@ def mixed_pinyin_to_ipa_candidates(pinyin_str: str) -> List[Tuple[str, float]]:
         segs = []
         # 莆仙候选（权重 1.0）
         try:
-            putian_segs = putian_syllable_to_ipa(key, tone)
+            putian_segs = putian_syllable_to_ipa_weighted(key, tone)
         except Exception:
             putian_segs = []
         if putian_segs:
             tone_cands = TONE_MAP.get(tone, ['']) if tone else ['']
-            for ps in set(putian_segs):
+            for ps, ps_weight in set(putian_segs):
                 for tc in tone_cands:
-                    segs.append((ps + tc, 1.0))
+                    segs.append((ps + tc, ps_weight))
 
         # 普通话候选（权重 0.8）
         try:
-            mandarin_segs = mandarin_syllable_to_ipa(key)
+            mandarin_segs = mandarin_syllable_to_ipa_weighted(key)
         except Exception:
             mandarin_segs = []
-        for ms in set(mandarin_segs):
-            segs.append((ms, 0.8))
+        for ms, ms_weight in set(mandarin_segs):
+            segs.append((ms, ms_weight))
 
         # 兜底：使用原始拼音片段（低权重）
         if not segs:
@@ -626,7 +480,7 @@ def generate_candidates(query: str) -> List[str]:
             rebuilt = ''.join([s['initial'] + s['final'] for s in syls])
             if rebuilt and rebuilt not in candidates:
                 candidates.append(rebuilt)
-    except:
+    except Exception:
         pass
     seen = set()
     out = []
