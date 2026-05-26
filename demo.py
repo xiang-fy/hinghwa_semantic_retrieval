@@ -253,7 +253,14 @@ class ExtensibleFusionQueryManager:
             return self._ipa_query_path(user_input)
         elif intent == "pinyin":
             return self._pinyin_query_path(user_input)
-        else:  # text 或 mixed
+        elif intent == "pinyin_llm":
+            # 拼音LLM查询：提取拼音片段进行匹配
+            pinyin_parts = classification.get("pinyin_parts", [])
+            return self._pinyin_llm_query_path(user_input, pinyin_parts)
+        elif intent == "mixed":
+            # 混合查询：同时包含中文和拼音，尝试多路径查询
+            return self._mixed_query_path(user_input)
+        else:  # text
             return self._original_query_path(user_input)
 
     def _ipa_query_path(self, user_input: str) -> str:
@@ -269,7 +276,7 @@ class ExtensibleFusionQueryManager:
     def _original_query_path(self, user_input: str) -> str:
         # 使用 MatcherManager 中封装的原始查询入口（parse_query + core_search）
         result = self.ipa_matcher.core_query(user_input)
-        return format_result(result)
+        return format_result(self._adapt(result))  # 统一调用 _adapt
 
     def _dialect_query_path(self, user_input: str) -> str:
         """方言词查询路径"""
@@ -284,6 +291,105 @@ class ExtensibleFusionQueryManager:
         if res:
             return format_result(self._adapt(res))
         return "未匹配到对应拼音词条"
+
+    def _pinyin_llm_query_path(self, user_input: str, pinyin_parts: List[str]) -> str:
+        """
+        拼音LLM查询路径：处理方言词+拼音组合查询
+        
+        处理逻辑：
+        1. 提取方言词部分和拼音部分
+        2. 分别进行匹配
+        3. 合并并去重结果
+        4. 如果拼音匹配失败，降级到原始文本查询
+        
+        例如："郎ba5" → 分别查询"郎"和"ba5"，合并结果
+        """
+        results = []
+        
+        # 如果没有提取到拼音片段，直接降级
+        if not pinyin_parts:
+            print(f"[降级处理] 未提取到拼音片段，使用原始查询路径")
+            return self._original_query_path(user_input)
+        
+        # 对每个提取的拼音片段进行匹配（去重后）
+        seen_parts = set()
+        for part in pinyin_parts:
+            if part in seen_parts:
+                continue
+            seen_parts.add(part)
+            
+            # 检查是否为方言词+拼音混合形式
+            if any(char >= '\u4e00' and char <= '\u9fa5' for char in part):
+                # 混合形式：拆分方言词和拼音部分
+                chinese_part = ''.join([c for c in part if c >= '\u4e00' and c <= '\u9fa5'])
+                pinyin_part = ''.join([c for c in part if c < '\u4e00' or c > '\u9fa5'])
+                
+                # 查询方言词部分
+                if chinese_part:
+                    dialect_res = matcher_manager.dialect_word_query(chinese_part, top_k=5)
+                    results.extend(dialect_res)
+                
+                # 查询拼音部分
+                if pinyin_part:
+                    pinyin_res = matcher_manager.pinyin_query(pinyin_part, top_k=5)
+                    results.extend(pinyin_res)
+            else:
+                # 纯拼音片段
+                pinyin_res = matcher_manager.pinyin_query(part, top_k=5)
+                results.extend(pinyin_res)
+        
+        # 去重（按方言词）
+        seen_words = set()
+        unique_results = []
+        for res in results:
+            dialect_word = res.get("方言词", "")
+            if dialect_word and dialect_word not in seen_words:
+                seen_words.add(dialect_word)
+                unique_results.append(res)
+        
+        if unique_results:
+            return format_result(self._adapt(unique_results))
+        
+        # 降级处理：拼音匹配失败，尝试原始文本查询
+        print(f"[降级处理] 拼音匹配失败，使用原始查询路径")
+        return self._original_query_path(user_input)
+
+    def _mixed_query_path(self, user_input: str) -> str:
+        """
+        混合查询路径：同时包含中文和拼音的查询
+        
+        处理逻辑：
+        1. 先尝试原始文本查询
+        2. 如果结果不足，尝试拼音查询
+        3. 合并去重结果
+        """
+        results = []
+        
+        # 1. 尝试原始文本查询
+        core_res = self.ipa_matcher.core_query(user_input)
+        results.extend(core_res)
+        
+        # 2. 尝试拼音查询（提取拼音部分）
+        pinyin_parts = intent_classifier._extract_pinyin_parts(user_input)
+        if pinyin_parts:
+            for part in pinyin_parts:
+                # 只处理纯拼音片段
+                if not any(char >= '\u4e00' and char <= '\u9fa5' for char in part):
+                    pinyin_res = matcher_manager.pinyin_query(part, top_k=3)
+                    results.extend(pinyin_res)
+        
+        # 3. 去重
+        seen_words = set()
+        unique_results = []
+        for res in results:
+            dialect_word = res.get("方言词", "")
+            if dialect_word and dialect_word not in seen_words:
+                seen_words.add(dialect_word)
+                unique_results.append(res)
+        
+        if unique_results:
+            return format_result(self._adapt(unique_results))
+        return "未匹配到对应词条"
 
     def _adapt(self, res):
         adapted = []

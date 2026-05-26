@@ -4,7 +4,7 @@
 支持识别：方言词查询、普通话查询、IPA查询、拼音查询
 """
 import re
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 class PreIntentClassifier:
@@ -84,15 +84,31 @@ class PreIntentClassifier:
             has_pinyin = True
             features.append("is_pinyin")
         
+        # 检查是否为拼音LLM查询（包含拼音片段的自然语言查询）
+        is_pinyin_llm = False
+        pinyin_parts = []
+        if has_chinese:
+            pinyin_parts = self._extract_pinyin_parts(user_input)
+            if pinyin_parts:
+                is_pinyin_llm = True
+                features.append("is_pinyin_llm")
+                features.append(f"pinyin_parts_count:{len(pinyin_parts)}")
+        
         # 判断意图类型
-        intent = self._determine_intent(has_chinese, has_ipa, has_pinyin, has_dialect)
+        intent = self._determine_intent(has_chinese, has_ipa, has_pinyin, has_dialect, is_pinyin_llm)
         confidence = self._calculate_confidence(intent, features)
         
-        return {
+        result = {
             "intent": intent,
             "confidence": confidence,
             "features": features
         }
+        
+        # 如果是拼音LLM查询，添加提取的拼音片段
+        if intent == "pinyin_llm":
+            result["pinyin_parts"] = pinyin_parts
+        
+        return result
     
     def _is_pinyin_input(self, text: str) -> bool:
         """判断是否为拼音输入"""
@@ -142,16 +158,59 @@ class PreIntentClassifier:
         
         return True
     
+    def _extract_pinyin_parts(self, text: str) -> List[str]:
+        """
+        从自然语言句子中提取拼音片段
+        
+        支持的场景：
+        a. 核心词汇均以拼音形式呈现（莆仙话拼音、普通话拼音或混合）
+           例如："语义为下车发音为lou2 lie1的方言词是？"
+        b. 核心词汇一半用方言词一半用拼音
+           例如："语义为阿姨发音为阿1i13的方言词是？"
+           例如："方言词是郎ba5完整词语是？"
+        """
+        pinyin_parts = []
+        
+        # 模式1：提取发音为/读音为/读音形似等后面的拼音或方言词+拼音混合形式
+        pattern1 = r'(?:发音为|读音为|读音形似|读)\s*([\u4e00-\u9fa5]*[a-züv]+(?:\d)?(?:\s+[\u4e00-\u9fa5]*[a-züv]+(?:\d)?)*)'
+        matches = re.findall(pattern1, text.lower())
+        for match in matches:
+            # 去除多余空格
+            clean = ''.join(match.split())
+            if clean:
+                pinyin_parts.append(clean)
+        
+        # 模式2：提取单独的拼音片段（前后有中文或标点）
+        pattern2 = r'(?:[^a-züv]|^)([a-züv]+(?:\d)?)(?:[^a-züv]|$)'
+        matches = re.findall(pattern2, text.lower())
+        for match in matches:
+            # 过滤太短的片段（至少2个字母或带声调数字）
+            if len(match) >= 2 or (len(match) == 1 and match[-1].isdigit()):
+                if match not in pinyin_parts:
+                    pinyin_parts.append(match)
+        
+        # 模式3：提取方言词+拼音混合形式（如"阿1i13", "郎ba5")
+        pattern3 = r'([\u4e00-\u9fa5]+[a-züv]+\d+|[a-züv]+\d+[\u4e00-\u9fa5]+)'
+        matches = re.findall(pattern3, text)
+        for match in matches:
+            pinyin_parts.append(match)
+        
+        return pinyin_parts
+    
     def _determine_intent(self, has_chinese: bool, has_ipa: bool, 
-                         has_pinyin: bool, has_dialect: bool) -> str:
+                         has_pinyin: bool, has_dialect: bool, is_pinyin_llm: bool = False) -> str:
         """判断意图类型"""
-        # 优先级：方言特色字符 > IPA > 拼音 > 文本
+        # 优先级：方言特色字符 > IPA > 拼音LLM > 纯拼音 > 混合 > 文本
         if has_dialect:
             return "dialect"
         elif has_ipa and not has_chinese:
             return "ipa"
+        elif is_pinyin_llm:
+            return "pinyin_llm"
         elif has_pinyin and not has_chinese:
             return "pinyin"
+        elif has_chinese and has_pinyin:
+            return "mixed"  # 同时有中文和拼音
         elif has_chinese:
             return "text"
         else:
